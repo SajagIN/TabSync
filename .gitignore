@@ -1,0 +1,34 @@
+# dependencies
+node_modules/
+.pnp
+.pnp.*
+
+# next.js
+.next/
+out/
+
+# production
+build/
+dist/
+
+# testing
+coverage/
+test-results/
+playwright-report/
+
+# misc
+*.tsbuildinfo
+next-env.d.ts
+.DS_Store
+*.pem
+*.local
+
+# env
+.env
+.env*.local
+
+# editors
+.vscode/
+.idea/
+*.swp
+*.swo
