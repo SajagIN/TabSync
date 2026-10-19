@@ -1,71 +1,84 @@
-import { describe, it, expect } from "vitest"
+import fc from "fast-check"
+import { describe, expect, it } from "vitest"
 import { mergeRegister } from "@/lib/tabsync/merge"
-import type { Register } from "@/lib/tabsync/types"
+import type { AnyRegister, Theme, Version } from "@/lib/tabsync/types"
 
-describe("LWW Register Merge", () => {
-  it("should prefer higher version (remote wins)", () => {
-    const local: Register<"theme"> = {
-      field: "theme",
-      value: "light",
-      version: { wallMs: 1000, counter: 0, actorId: "a" },
-    }
-    const remote: Register<"theme"> = {
-      field: "theme",
-      value: "dark",
-      version: { wallMs: 1005, counter: 0, actorId: "b" },
-    }
+function theme(value: Theme, version: Version): AnyRegister {
+  return { v: 1, field: "theme", value, version }
+}
 
-    const res = mergeRegister(local, remote)
-    expect(res.winner).toBe("remote")
-    expect(res.register.value).toBe("dark")
-    expect(res.conflict).toBe(false)
+function maxRegister(left: AnyRegister, right: AnyRegister): AnyRegister {
+  return mergeRegister(left, right).register
+}
+
+describe("per-field register merge", () => {
+  it("chooses the greater version regardless of arrival order", () => {
+    const earlier = theme("light", { wallMs: 1_000, counter: 0, actorId: "a" })
+    const later = theme("dark", { wallMs: 1_000, counter: 1, actorId: "b" })
+
+    expect(mergeRegister(earlier, later)).toEqual({
+      register: later,
+      changed: true,
+      conflict: false,
+    })
+    expect(mergeRegister(later, earlier)).toEqual({
+      register: later,
+      changed: false,
+      conflict: false,
+    })
   })
 
-  it("should prefer local when local version is higher", () => {
-    const local: Register<"theme"> = {
-      field: "theme",
-      value: "dark",
-      version: { wallMs: 1010, counter: 0, actorId: "a" },
-    }
-    const remote: Register<"theme"> = {
-      field: "theme",
-      value: "light",
-      version: { wallMs: 1000, counter: 0, actorId: "b" },
-    }
-
-    const res = mergeRegister(local, remote)
-    expect(res.winner).toBe("local")
-    expect(res.register.value).toBe("dark")
-    expect(res.conflict).toBe(false)
+  it("is idempotent for the same register", () => {
+    const record = theme("dark", { wallMs: 1_000, counter: 0, actorId: "a" })
+    expect(mergeRegister(record, record)).toEqual({
+      register: record,
+      changed: false,
+      conflict: false,
+    })
   })
 
-  it("should handle equal versions with same values (no-op)", () => {
-    const reg: Register<"theme"> = {
-      field: "theme",
-      value: "dark",
-      version: { wallMs: 1000, counter: 0, actorId: "a" },
-    }
+  it("reports equal-version, different-value records as corruption", () => {
+    const version = { wallMs: 1_000, counter: 0, actorId: "a" }
+    const current = theme("dark", version)
+    const incoming = theme("light", version)
+    const result = mergeRegister(current, incoming)
 
-    const res = mergeRegister(reg, reg)
-    expect(res.winner).toBe("local")
-    expect(res.register.value).toBe("dark")
-    expect(res.conflict).toBe(false)
+    expect(result.register).toBe(current)
+    expect(result.changed).toBe(false)
+    expect(result.conflict).toBe(true)
   })
 
-  it("should detect conflict on equal version with different values", () => {
-    const local: Register<"theme"> = {
-      field: "theme",
-      value: "dark",
-      version: { wallMs: 1000, counter: 0, actorId: "a" },
+  it("rejects attempts to merge different fields", () => {
+    const themeRecord = theme("light", { wallMs: 1, counter: 0, actorId: "a" })
+    const languageRecord: AnyRegister = {
+      v: 1,
+      field: "language",
+      value: "en",
+      version: { wallMs: 2, counter: 0, actorId: "b" },
     }
-    const remote: Register<"theme"> = {
-      field: "theme",
-      value: "light",
-      version: { wallMs: 1000, counter: 0, actorId: "a" },
-    }
+    expect(() => mergeRegister(themeRecord, languageRecord)).toThrow(/different fields/)
+  })
 
-    const res = mergeRegister(local, remote)
-    expect(res.conflict).toBe(true)
-    expect(res.register.value).toBe("dark") // keeps local
+  it("is commutative, associative, and idempotent for compliant records", () => {
+    const recordArbitrary = fc
+      .record({
+        wallMs: fc.nat({ max: 10_000 }),
+        counter: fc.nat({ max: 0xffff }),
+        actorNumber: fc.integer({ min: 0, max: 7 }),
+      })
+      .map(({ wallMs, counter, actorNumber }) => {
+        const actorId = `actor_${actorNumber}`
+        const value: Theme = actorNumber % 2 === 0 ? "light" : "dark"
+        return theme(value, { wallMs, counter, actorId })
+      })
+
+    fc.assert(
+      fc.property(recordArbitrary, recordArbitrary, recordArbitrary, (a, b, c) => {
+        expect(maxRegister(a, b)).toEqual(maxRegister(b, a))
+        expect(maxRegister(a, a)).toEqual(a)
+        expect(maxRegister(maxRegister(a, b), c)).toEqual(maxRegister(a, maxRegister(b, c)))
+      }),
+      { numRuns: 250 },
+    )
   })
 })

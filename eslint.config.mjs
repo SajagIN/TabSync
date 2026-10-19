@@ -1,29 +1,32 @@
-import { dirname } from "path"
-import { fileURLToPath } from "url"
-import { FlatCompat } from "@eslint/eslintcompat"
-
-const __filename = fileURLToPath(import.meta.url)
-const __dirname = dirname(__filename)
-
-const compat = new FlatCompat({ baseDirectory: __dirname })
+import nextVitals from "eslint-config-next/core-web-vitals"
+import nextTs from "eslint-config-next/typescript"
 
 const eslintConfig = [
-  ...compat.extends("next/core-web-vitals", "next/typescript"),
+  ...nextVitals,
+  ...nextTs,
   {
+    files: ["lib/tabsync/**/*.{js,jsx,ts,tsx}"],
     rules: {
       "no-restricted-imports": [
         "error",
         {
+          paths: [
+            { name: "react", message: "The sync protocol must remain framework-free." },
+            { name: "next", message: "The sync protocol must remain framework-free." },
+          ],
           patterns: [
             {
-              group: ["@/components/*"],
-              importNamePattern: "",
+              group: ["next/*", "react/*", "@/components/*", "@/hooks/*"],
               message:
-                "components → hooks → store → {transport, storage} → {merge, validation, version, types}. Imports never point backwards.",
+                "Protocol modules must not depend on UI, React, or Next.js. Keep the core browser-independent and unit-testable.",
             },
           ],
         },
       ],
+    },
+  },
+  {
+    rules: {
       "no-console": ["error", { allow: ["warn", "error"] }],
     },
   },
