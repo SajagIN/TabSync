@@ -1,33 +1,20 @@
-// ─── Field definitions ───────────────────────────────────────────
+export const FIELD_NAMES = ["theme", "language", "fontSize"] as const
 
-export type FieldName = "theme" | "language" | "fontSize"
+export type FieldName = (typeof FIELD_NAMES)[number]
+export type Theme = "light" | "dark"
+export type Language = "en" | "hi" | "ta"
 
 export interface FieldValueMap {
-  theme: "light" | "dark"
-  language: "en" | "hi" | "ta"
-  fontSize: number // 14–24, step 1
+  theme: Theme
+  language: Language
+  fontSize: number
 }
 
-/** Domain constraints for validation */
-export const FieldDomain: {
-  readonly [F in FieldName]: F extends "fontSize"
-    ? { readonly min: number; readonly max: number; readonly step: number }
-    : { readonly values: readonly FieldValueMap[F][] }
-} = {
-  theme: { values: ["light", "dark"] as const },
-  language: { values: ["en", "hi", "ta"] as const },
-  fontSize: { min: 14, max: 24, step: 1 },
-} as const
-
-export const FIELD_NAMES: readonly FieldName[] = ["theme", "language", "fontSize"] as const
-
-export const DEFAULTS: { readonly [F in FieldName]: FieldValueMap[F] } = {
+export const DEFAULTS: Readonly<FieldValueMap> = Object.freeze({
   theme: "light",
   language: "en",
   fontSize: 16,
-} as const
-
-// ─── CRDT versioning ─────────────────────────────────────────────
+})
 
 export interface Version {
   wallMs: number
@@ -35,11 +22,16 @@ export interface Version {
   actorId: string
 }
 
-export interface Register<F extends FieldName = FieldName> {
+export interface Register<F extends FieldName> {
+  v: 1
   field: F
   value: FieldValueMap[F]
   version: Version
 }
+
+export type AnyRegister = {
+  [F in FieldName]: Register<F>
+}[FieldName]
 
 export interface SettingsState {
   theme: Register<"theme">
@@ -47,84 +39,77 @@ export interface SettingsState {
   fontSize: Register<"fontSize">
 }
 
-// ─── Sync status & events ────────────────────────────────────────
-
-export interface SyncStatus {
-  transport: "broadcast" | "storage" | "none"
-  persistence: "ok" | "degraded"
-  peers: number
-  lastError: string | null
-}
-
+export type TransportMode = "broadcast" | "storage" | "none"
+export type PersistenceMode = "ok" | "degraded"
 export type SyncEventKind = "local" | "remote" | "merge" | "rejected" | "lifecycle"
 
 export interface SyncEvent {
+  id: string
   at: number
   kind: SyncEventKind
   field?: FieldName
   version?: Version
+  direction?: "outbound" | "inbound" | "restored"
+  latencyMs?: number
   detail?: string
 }
 
-// ─── Envelope (wire protocol) ────────────────────────────────────
+export interface SyncStatus {
+  transport: TransportMode
+  persistence: PersistenceMode
+  peers: number
+  lastError: string | null
+  restoredRecords: number
+  rejectedRecords: number
+}
 
-export type EnvelopeType = "HELLO" | "STATE" | "UPDATE" | "PING"
+export interface SettingsSnapshot {
+  state: SettingsState
+  status: SyncStatus
+  log: readonly SyncEvent[]
+  actorId: string
+}
 
-export interface Envelope {
+interface EnvelopeBase {
   proto: 1
-  t: EnvelopeType
   from: string
   msgId: string
-  state?: unknown
-  register?: unknown
+  sentAt?: number
 }
 
-// ─── Dependencies / interfaces ───────────────────────────────────
-
-export interface Clock {
-  tick(): Version
-  observe(remote: Version): void
-  now(): number
-}
-
-export interface Transport {
-  send(envelope: Envelope): void
-  subscribe(handler: (envelope: Envelope) => void): () => void
-  dispose(): void
-}
+export type Envelope =
+  | (EnvelopeBase & { type: "HELLO" | "PING" })
+  | (EnvelopeBase & { type: "STATE"; records: unknown })
+  | (EnvelopeBase & { type: "UPDATE"; record: unknown })
 
 export interface StorageLike {
+  readonly length: number
+  key(index: number): string | null
   getItem(key: string): string | null
   setItem(key: string, value: string): void
   removeItem(key: string): void
 }
 
-export interface TestHooks {
-  skipBroadcast?: boolean
-  onMerge?: (field: FieldName, winner: "local" | "remote") => void
-  onReject?: (reason: string) => void
-}
-
-export interface StoreDeps {
-  clock: Clock
-  storage: StorageLike
-  actorId: string
-  transport?: Transport
-  now?: () => number
-  testMode?: TestHooks
-}
-
-export interface SettingsStore {
-  getState(): SettingsState
-  subscribe(listener: () => void): () => void
-  setField<F extends FieldName>(field: F, value: FieldValueMap[F]): void
-  resetDefaults(): void
-  getStatus(): SyncStatus
-  getLog(): readonly SyncEvent[]
+export interface SyncTransport {
+  getMode(): TransportMode
+  send(message: Envelope): void
+  subscribe(handler: (message: unknown) => void): () => void
   dispose(): void
 }
 
-// ─── Storage key convention ──────────────────────────────────────
+export interface SettingsStore {
+  getSnapshot(): SettingsSnapshot
+  subscribe(listener: () => void): () => void
+  setField<F extends FieldName>(field: F, value: FieldValueMap[F]): void
+  resetDefaults(): void
+  flushPending(): void
+  reconcile(): void
+  dispose(): void
+}
 
-export const STORAGE_PREFIX = "tabsync:v1:register:" as const
-export const storageKey = (field: FieldName): string => `${STORAGE_PREFIX}${field}`
+export interface StoreDependencies {
+  actorId?: string
+  storage?: StorageLike | null
+  transport?: SyncTransport
+  now?: () => number
+}

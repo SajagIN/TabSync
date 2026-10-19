@@ -1,115 +1,98 @@
-import type { Envelope, Transport } from "./types"
+import { STORAGE_PREFIX } from "./storage"
+import type { Envelope, SyncTransport, TransportMode } from "./types"
 
 const CHANNEL_NAME = "tabsync:v1"
-const RING_SIZE = 200
 
-export class BroadcastTransport implements Transport {
+function isEnvelope(value: unknown): value is Envelope {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false
+  const envelope = value as Record<string, unknown>
+  return (
+    envelope["proto"] === 1 &&
+    typeof envelope["type"] === "string" &&
+    ["HELLO", "PING", "STATE", "UPDATE"].includes(envelope["type"]) &&
+    typeof envelope["from"] === "string" &&
+    typeof envelope["msgId"] === "string"
+  )
+}
+
+export class BrowserTransport implements SyncTransport {
+  private mode: TransportMode = "none"
   private channel: BroadcastChannel | null = null
-  private handler: ((envelope: Envelope) => void) | null = null
-  private seenMsgIds = new Set<string>()
-  private msgIdRing: string[] = []
-  private storageHandler: ((e: StorageEvent) => void) | null = null
-  private storageKeyPrefix = "tabsync:v1:msg:"
+  private handler: ((message: unknown) => void) | null = null
+  private storageListener: ((event: StorageEvent) => void) | null = null
+  private readonly storageAvailable: boolean
 
-  constructor() {
-    if (typeof window !== "undefined" && typeof BroadcastChannel !== "undefined") {
+  constructor(storageAvailable: boolean) {
+    this.storageAvailable = storageAvailable
+    if (typeof window === "undefined") return
+
+    const forcedStorage = new URLSearchParams(window.location.search).get("transport") === "storage"
+    if (!forcedStorage && typeof BroadcastChannel !== "undefined") {
       try {
         this.channel = new BroadcastChannel(CHANNEL_NAME)
-        this.channel.onmessage = (event) => {
-          this.handleIncoming(event.data)
-        }
+        this.channel.onmessage = (event: MessageEvent<unknown>) => this.receive(event.data)
+        this.mode = "broadcast"
       } catch {
         this.channel = null
       }
     }
 
-    // Fallback or secondary via localStorage storage events
-    if (typeof window !== "undefined") {
-      this.storageHandler = (e: StorageEvent) => {
-        if (!e.key || !e.key.startsWith(this.storageKeyPrefix) || !e.newValue) return
-        try {
-          const envelope = JSON.parse(e.newValue)
-          this.handleIncoming(envelope)
-        } catch {
-          // ignore parse errors
+    if (this.mode === "none") this.mode = storageAvailable ? "storage" : "none"
+
+    this.storageListener = (event) => {
+      if (!event.key?.startsWith(STORAGE_PREFIX) || !event.newValue) return
+      try {
+        const record: unknown = JSON.parse(event.newValue)
+        const actorId = event.key.slice(event.key.lastIndexOf(":") + 1)
+        const envelope: Envelope = {
+          proto: 1,
+          type: "UPDATE",
+          from: actorId,
+          msgId: `storage:${event.key}:${event.newValue}`,
+          record,
         }
+        this.receive(envelope)
+      } catch {
+        // The store records invalid durable data during its next reconciliation.
       }
-      window.addEventListener("storage", this.storageHandler)
+    }
+    window.addEventListener("storage", this.storageListener)
+  }
+
+  getMode(): TransportMode {
+    return this.mode
+  }
+
+  send(message: Envelope): void {
+    if (!this.channel || this.mode !== "broadcast") return
+    try {
+      this.channel.postMessage(message)
+    } catch {
+      this.channel.close()
+      this.channel = null
+      this.mode = this.storageAvailable ? "storage" : "none"
     }
   }
 
-  send(envelope: Envelope): void {
-    this.rememberMsgId(envelope.msgId)
-
-    if (this.channel) {
-      try {
-        this.channel.postMessage(envelope)
-      } catch {
-        // BroadcastChannel failed, use storage fallback
-      }
-    }
-
-    // Also write to localStorage for storage event fallback
-    if (typeof window !== "undefined") {
-      try {
-        const key = `${this.storageKeyPrefix}${Date.now()}_${Math.random()}`
-        localStorage.setItem(key, JSON.stringify(envelope))
-        setTimeout(() => {
-          try {
-            localStorage.removeItem(key)
-          } catch {
-            // ignore
-          }
-        }, 1000)
-      } catch {
-        // storage full or disabled
-      }
-    }
-  }
-
-  subscribe(handler: (envelope: Envelope) => void): () => void {
+  subscribe(handler: (message: unknown) => void): () => void {
     this.handler = handler
     return () => {
-      this.handler = null
+      if (this.handler === handler) this.handler = null
     }
   }
 
   dispose(): void {
-    if (this.channel) {
-      this.channel.close()
-      this.channel = null
+    this.channel?.close()
+    this.channel = null
+    if (typeof window !== "undefined" && this.storageListener) {
+      window.removeEventListener("storage", this.storageListener)
     }
-    if (typeof window !== "undefined" && this.storageHandler) {
-      window.removeEventListener("storage", this.storageHandler)
-      this.storageHandler = null
-    }
+    this.storageListener = null
     this.handler = null
-    this.seenMsgIds.clear()
-    this.msgIdRing = []
   }
 
-  private handleIncoming(data: unknown): void {
-    if (!data || typeof data !== "object") return
-    const env = data as Envelope
-    if (env.proto !== 1 || !env.msgId || !env.from) return
-
-    if (this.seenMsgIds.has(env.msgId)) return
-    this.rememberMsgId(env.msgId)
-
-    if (this.handler) {
-      this.handler(env)
-    }
-  }
-
-  private rememberMsgId(msgId: string): void {
-    if (this.seenMsgIds.has(msgId)) return
-    this.seenMsgIds.add(msgId)
-    this.msgIdRing.push(msgId)
-    if (this.msgIdRing.length > RING_SIZE) {
-      const oldest = this.msgIdRing.shift()
-      if (oldest) {
-        this.seenMsgIds.delete(oldest)
-      }
-    }
+  private receive(value: unknown): void {
+    if (!isEnvelope(value)) return
+    this.handler?.(value)
   }
 }

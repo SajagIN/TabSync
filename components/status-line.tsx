@@ -1,29 +1,70 @@
-"use client"
+import { AlertTriangle, Radio, Save, Users } from "lucide-react"
+import type { SyncStatus } from "@/lib/tabsync/types"
+import type { Messages } from "@/lib/i18n/dictionaries"
 
-import { useSettings } from "@/hooks/use-settings"
-import { getDictionary } from "@/lib/i18n/dictionaries"
+interface StatusLineProps {
+  status: SyncStatus
+  messages: Messages
+}
 
-export function StatusLine() {
-  const { state, status } = useSettings()
-  const dict = getDictionary(state.language.value)
+export function StatusLine({ status, messages }: StatusLineProps) {
+  const transportLabel =
+    status.transport === "broadcast"
+      ? "BroadcastChannel"
+      : status.transport === "storage"
+        ? "Storage events"
+        : messages.noTransport
 
   return (
-    <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border bg-card px-6 py-4 text-card-foreground shadow-sm">
-      <div className="flex items-center gap-3">
-        <span className={`h-2.5 w-2.5 rounded-full ${status.persistence === "ok" ? "bg-emerald-500" : "bg-amber-500"}`} />
-        <span className="text-sm font-medium">
-          {dict.status}: {status.persistence === "ok" ? "Synchronized" : "Degraded"}
+    <section className="status-card" aria-labelledby="status-title">
+      <div className="status-heading">
+        <div className={`status-indicator ${status.transport === "none" ? "is-offline" : ""}`} />
+        <h2 id="status-title">{messages.statusTitle}</h2>
+        <span className="status-caption" role="status" aria-live="polite">
+          {status.transport === "none" ? messages.noTransport : messages.connected}
         </span>
       </div>
 
-      <div className="flex items-center gap-6 text-sm text-muted-foreground">
-        <div>
-          {dict.transport}: <span className="font-medium text-foreground capitalize">{status.transport}</span>
+      <dl className="status-metrics">
+        <div className="status-metric">
+          <dt>
+            <Radio size={14} aria-hidden="true" />
+            {messages.transport}
+          </dt>
+          <dd>{transportLabel}</dd>
         </div>
-        <div>
-          {dict.peers}: <span className="font-medium text-foreground">{status.peers}</span>
+        <div className="status-metric">
+          <dt>
+            <Save size={14} aria-hidden="true" />
+            {messages.persistence}
+          </dt>
+          <dd className={status.persistence === "ok" ? "metric-good" : "metric-warn"}>
+            {status.persistence === "ok" ? messages.saved : messages.degraded}
+          </dd>
         </div>
-      </div>
-    </div>
+        <div className="status-metric">
+          <dt>
+            <Users size={14} aria-hidden="true" />
+            {messages.peers}
+          </dt>
+          <dd>{status.transport === "broadcast" ? status.peers : "—"}</dd>
+        </div>
+      </dl>
+
+      {status.persistence === "degraded" && (
+        <p className="status-alert">
+          <AlertTriangle size={16} aria-hidden="true" />
+          <span>
+            {status.transport === "none"
+              ? messages.unavailableCopy
+              : status.lastError || messages.degradedCopy}
+          </span>
+        </p>
+      )}
+      {status.transport === "broadcast" && status.peers === 0 && (
+        <p className="status-note">{messages.noPeers}</p>
+      )}
+      {status.transport === "storage" && <p className="status-note">{messages.storageTransport}</p>}
+    </section>
   )
 }
